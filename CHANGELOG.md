@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 *   The welcome dialog takes an email address in any script, such as josé@example.es, and refuses with a reason anything that is not one: more than 254 characters, markup, control characters, doubled dots. It used to accept any text without a space, of any length.
 *   A failed delete is said aloud as well as shown.
 *   On start, the server forgets ownership of uploads whose files are gone, and removes uploaded files that nobody owns. Those are uploads made without saving a cookie, which belong to their tab only until the server restarts; after that nobody could see or delete them.
+*   The site's address is the viewer. It used to show a raw list of the server's internal addresses, which a screen reader read out one line at a time, and which named parts of the app that are not meant to be public. `/viewer` still works, with or without a trailing slash. On a demo station the address opens the demo page, which records nothing.
+
+#### Added
+*   The viewer says, before you connect a display, to use a screen reader in focus mode (NVDA) or forms mode (JAWS). It is read with the Connect button until Connect has had focus once, and stays on the page after that. Where a braille display cannot be connected at all, it says why: an address that is not https or localhost, or a browser without Web HID or Web Bluetooth, which Chrome and Edge have.
+*   The integration API has an address, `/api/v1`, and a public description at `/api/v1/openapi.json`. There is nothing in it yet; it is where tools that send models in will connect. Every error under it is answered in the same JSON shape. A demo station does not offer it.
 
 #### Changed
 *   Giving the same email on another browser or device no longer brings your uploads with it. That link is what made the address a key, and it stays gone until there is a sign-in that proves an address is yours.
