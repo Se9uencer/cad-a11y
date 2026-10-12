@@ -233,26 +233,25 @@ def test_the_model_list_gives_away_no_filesystem_paths(stranger):
         ("/render/fit-view", None),
     ],
 )
-def test_a_stranger_gets_the_default_model_not_the_upload(owner, stranger, path, field):
+def test_a_stranger_is_refused_the_upload_as_for_a_name_that_does_not_exist(owner, stranger, path, field):
     """Every endpoint that takes a model answers a stranger as it would a name
-    that does not exist, so the answer cannot tell anyone an upload is there."""
+    that does not exist, so the answer cannot tell anyone an upload is there.
+    Both are refused with the same 404 (#238); neither gets the default."""
     _identify(owner, email="a@example.com")
     stem = _upload(owner)["model_stem"]
     extra = {"export_width": 160, "dotpad_cols": 30, "dotpad_rows": 10}
 
-    def answer(client, model, tab):
-        body = _post(client, path, model, tab, **extra)
-        body.pop("debug", None)
-        body.pop("model_list", None)
-        return body[field] if field else body
+    def refusal(client, model, tab):
+        response = client.post(path, json=_render_body(model, **extra), headers=_headers(tab))
+        return response.status_code, response.get_json()
 
-    owners = answer(owner, stem, TAB_A)
-    default = answer(stranger, None, TAB_B)
-    assert owners != default, "the upload renders like the default, so this proves nothing"
+    owners = _post(owner, path, stem, TAB_A, **extra)
+    assert owners[field] if field else owners, "the owner did not get their upload"
 
-    assert answer(stranger, stem, TAB_B) == default, "a stranger got the upload"
-    assert answer(stranger, stem, None) == default, "a request naming no tab got the upload"
-    assert answer(stranger, "no_such_model", TAB_B) == default
+    unknown = refusal(stranger, "no_such_model", TAB_B)
+    assert unknown[0] == 404
+    assert refusal(stranger, stem, TAB_B) == unknown, "a stranger got the upload"
+    assert refusal(stranger, stem, None) == unknown, "a request naming no tab got the upload"
 
 
 def test_a_position_in_the_list_cannot_reach_someone_elses_upload(owner, stranger):
@@ -260,9 +259,16 @@ def test_a_position_in_the_list_cannot_reach_someone_elses_upload(owner, strange
     _identify(owner, email="a@example.com")
     stem = _upload(owner)["model_stem"]
     index = server.MODEL_NAME_LIST.index(stem)
+    # Uploads are listed after the built-ins, so the upload's place in the whole
+    # list is past the end of the stranger's, and that is refused (#238).
+    assert index >= len(_listing(stranger, TAB_B))
 
-    default = _post(stranger, "/render", None, TAB_B)["image_base64"]
-    assert _post(stranger, "/render", index, TAB_B)["image_base64"] == default
+    def refusal(model):
+        response = stranger.post("/render", json=_render_body(model), headers=_headers(TAB_B))
+        return response.status_code, response.get_json()
+
+    assert refusal(index) == refusal("no_such_model")
+    assert refusal(index)[0] == 404
 
 
 def test_the_owner_renders_their_upload_by_cookie_from_a_second_tab(owner):
@@ -353,8 +359,8 @@ def test_a_name_freed_by_cleanup_does_not_carry_its_old_owner(owner, stranger, i
 
     assert owner.get("/session/models").get_json()["models"] == []
     assert "bracket" not in _listing(owner, TAB_A), "the old owner can list the new upload"
-    default = _post(owner, "/render", None, TAB_A)["image_base64"]
-    assert _post(owner, "/render", "bracket", TAB_A)["image_base64"] == default
+    refused = owner.post("/render", json=_render_body("bracket"), headers=_headers(TAB_A))
+    assert refused.status_code == 404, "the old owner can render the new upload"
 
     assert owner.delete("/models/bracket.stl").status_code == 404
     assert (upload_dir / "bracket.stl").exists(), "the old owner deleted the new upload"
