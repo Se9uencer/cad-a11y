@@ -49,6 +49,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 *   The viewer no longer shows a different model from the one you chose. A model that can't be shown, because it has gone or can't be opened, is refused: the viewer says it isn't available and stays on the model you were exploring. It used to show the default model instead, and announce the one you chose as loaded.
 *   The model list keeps up. When a model is uploaded or removed, in this window or another, every open viewer updates its list straight away instead of up to five seconds later. If the model on the display is removed, the viewer says so, and says which model it shows instead.
 
+### 2026-09-29
+
+#### Added
+*   A tutorial that starts by itself the first time someone opens the viewer in a browser, after the consent dialog, so people who arrive without a facilitator can learn the viewer on their own. It teaches the viewer on a practice mug in 12 lessons: connecting and testing a display, what a slice is, moving the slice plane, render modes, zoom and moving the model, X, Y and Z, Reset and Fit, help and Settings, a set of "mug detective" challenges, and loading your own model. Three extras follow for anyone who wants them: layouts and the slice graph, the cube, and the slider. It runs in a region at the top of the page with the real controls, not in a dialog, so every key works while it teaches them. Each step moves on when the viewer shows you did the thing (the slice plane reached the handle, the render mode came back to Cut), says what changed, and never moves on or repeats itself on a timer. A step with something to read or feel waits for Next (N) instead, and ends with "Press Next (N) when ready." Hints come only when asked for, and on a step that moves the slice plane, Show me (M) does it for you and says what is there. The display chosen in the first lesson becomes the Output device setting and is kept for later visits, and before the end the tutorial links to the guides for building the cube and the slider.
+*   Exit tutorial on every step. It pauses the tutorial rather than dismissing it: the viewer is yours straight away, and the new Tutorial button in the main menu, or the top of the keyboard shortcuts list, resumes at the same lesson and step, starts over, or opens any lesson from a list with its status. Closing the tab partway through the first run picks up at the same place next time. Someone who has used the viewer before hears once that the tutorial is there, and it does not start by itself for them. It never starts by itself on the demo, workshop or study pages; the demo offers it from the Tutorial button, and `?tutorial=start` opens it anywhere it is offered.
+*   Key help mode, from the tutorial or the shortcuts list: every key and every Monarch or DotPad button says what it does and does nothing, the way VoiceOver's keyboard help and NVDA's input help work.
+*   A practice mug in millimetres, standing on Z = 0 with its handle toward negative Y as an OpenSCAD model would, and printable files for it, ten slice plaques and a separate, larger set of mug pieces cut along X at `/tutorial/prints.zip`.
+
+#### Removed
+*   P, "Print current render", from the keys and the keyboard shortcuts help. It never worked: the render it was sent with failed, and nothing was printed or saved. #49 has the fix for the server's print path, if printing comes back.
+
+#### Fixed
+*   F said the output device's internal name ("View fitted to monarch_hid") and fitted the slice to the Monarch's size on every display. It now fits to the display the render is actually drawn for, and says "View fitted to the Monarch" or "the DotPad" when one is connected, otherwise "View fitted to the display".
+*   The README described a LEGO practice round the study no longer runs, a demo chooser that offered every model, and a study panel that started a session as soon as it opened. It now says what each one does.
+*   Focus went to the page title twice on every load, the second time a moment after the page was ready, which would pull it off anything focused in between, such as the tutorial's first lesson. The second move now happens only when the page comes back from the browser's cache, which is what it was for.
+
 ### 2026-09-28
 
 #### Fixed

@@ -137,9 +137,35 @@ jobs:
             // so a fresh tab always opens on the task-set picker. Both of its
             // states are checked: the picker, and the running session reached
             // by choosing a set from it.
+            // The tutorial opens by itself on a first visit to /viewer, once the
+            // consent dialog is answered, so both of its views are checked here:
+            // a lesson, and the lesson list. The second load finds consent
+            // already decided and the tutorial already under way, so it resumes
+            // without a dialog to answer.
+            const answerConsent = async () => {
+              if (await page.isVisible('#consent-decline')) await page.click('#consent-decline');
+              await page.waitForSelector('#tutorial-region:not([hidden])');
+            };
             let started = null;
             const pages = [
               { name: '/viewer', url: () => `${base}/viewer` },
+              {
+                name: '/viewer (tutorial lesson)',
+                url: () => `${base}/viewer`,
+                after: async () => {
+                  await answerConsent();
+                  await page.waitForSelector('#tutorial-lesson-view:not([hidden])');
+                },
+              },
+              {
+                name: '/viewer (tutorial lesson list)',
+                url: () => `${base}/viewer`,
+                after: async () => {
+                  await answerConsent();
+                  await page.click('#tutorial-lessons-btn');
+                  await page.waitForSelector('#tutorial-menu-view:not([hidden])');
+                },
+              },
               { name: '/studies/example/control (signing in)', url: () => `${study}/control` },
               {
                 name: '/studies/example (waiting for a code)',

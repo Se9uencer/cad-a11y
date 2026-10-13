@@ -174,6 +174,9 @@ const RENDER_RETRY_LIMIT = 1;
 // Starts full, so the very first render can retry too, and is refilled by every
 // success. A run of failures therefore costs one extra attempt, not one each.
 let renderRetriesLeft = RENDER_RETRY_LIMIT;
+// The body of the last render that reached the display, or null before one has.
+// See the success handler in sendStateToServer.
+let lastRenderedState = null;
 
 function scheduleHighFidelityPreview(state) {
     if (previewRequestTimer) {
@@ -412,6 +415,10 @@ async function sendStateToServer() {
             renderHeaders['X-Study'] = studySlug;
             renderHeaders['X-Study-Key'] = studySessionKey;
         }
+        // The tutorial's own renders (a lesson's starting view) are not the
+        // person exploring, so the server leaves them out of the analytics.
+        // Also a header, for the same cache-key reason as the study session.
+        if (state.input_source === 'tutorial') renderHeaders['X-CAD-Tutorial'] = '1';
 
         fetch(`${SERVER_URL}/render`, {
             method: 'POST',
@@ -529,17 +536,48 @@ async function sendStateToServer() {
                 scheduleHighFidelityPreview(state);
             }
 
+            // While the tutorial's test pattern is on the pins, a render must
+            // not replace it: the person is feeling for the bump, and a frame
+            // arriving mid-question would answer a different question. The
+            // render itself still happens, so the previews stay current and the
+            // pattern is replaced by the live view the moment the hold ends.
+            const displayHeld = Boolean(window.cadTutorial && window.cadTutorial.holdDisplay);
             // Trigger DotPad web send if connected
-            if (typeof window._dotpadOnRender === 'function') {
+            if (!displayHeld && typeof window._dotpadOnRender === 'function') {
                 window._dotpadOnRender(state);
             }
             // Trigger Monarch browser Web HID send if connected
-            if (typeof window._monarchHidOnRender === 'function' && data.monarch_cells_hex) {
+            if (!displayHeld && typeof window._monarchHidOnRender === 'function' && data.monarch_cells_hex) {
                 window._monarchHidOnRender(data.monarch_cells_hex);
             }
             // This state reached the display. Anything newer is still owed one.
             renderDeliveredSerial = Math.max(renderDeliveredSerial, attemptSerial);
             renderRetriesLeft = RENDER_RETRY_LIMIT;
+            // What is on the display now, for the tutorial's /tutorial/locate:
+            // the request as sent, with the pan it asked for already applied, so
+            // posting it again describes this frame rather than moving once more.
+            lastRenderedState = {
+                ...state,
+                camera_center: Array.isArray(data.camera_center) ? data.camera_center : state.camera_center,
+                world_camera_center: Array.isArray(data.world_camera_center)
+                    ? data.world_camera_center
+                    : state.world_camera_center,
+                move_camera_center: 'none',
+                print_view: false,
+            };
+            // Not on a study page: the study log does not take render events (the
+            // server's own render rows already record them), and the tutorial,
+            // the one listener that wants them, never runs there.
+            if (!studyMode) {
+                reportStudyInteraction('render', {
+                    // The server only ever sends slicegraph_ready: false, while
+                    // the graph is still being computed, and leaves the key out
+                    // once it is ready (see _render_response). So ready means a
+                    // slice-graph render that did not say false.
+                    slicegraph_ready: Boolean(state.compose_slicegraph) && data.slicegraph_ready !== false,
+                    model: state.model,
+                });
+            }
         })
         .catch(error => {
             if (error.name === 'AbortError') return; // Superseded by a newer request — ignore
@@ -599,6 +637,8 @@ viewerState.currentZoom = 0.0;
 viewerState.currentRenderMode = 'cut';
 viewerState.currentRepresentationMode = 'single';
 viewerState.currentMoveCamera = "none";
+// Nothing sets this since P stopped printing (#245 review): the server's print
+// path has never worked (see #49), and a key can come back with a fix.
 viewerState.currentPrintView = false;
 // The output-device radio the user picked: 'monarch' or 'dotpad'. Also flipped
 // automatically on a successful connect — see setMonarchHidConnected /
@@ -1831,13 +1871,6 @@ function toggleSliceGraphLock() {
     setSliceGraphLocked(!viewerState.sliceGraphLocked);
 }
 
-function print_view(){
-    // currentPrintView is reset inside sendStateToServer itself, only once
-    // actually consumed -- see the moveCamera/printView comment there.
-    viewerState.currentPrintView = true;
-    sendStateToServer();
-}
-
 function formatDebugValue(value) {
     if (value === undefined || value === null) {
         return 'null';
@@ -1908,6 +1941,8 @@ function makeInfoDialogController(dialog, headingEl) {
         // (the heading, made focusable via tabindex="-1"), so reading forward
         // covers the whole dialog.
         if (headingEl) headingEl.focus({ preventScroll: true });
+        // Named by the dialog's own id, so the three callers stay as they are.
+        reportStudyInteraction('ui_action', { name: dialog.id, action: 'open' });
     }
 
     function close() {
@@ -1925,6 +1960,9 @@ function makeInfoDialogController(dialog, headingEl) {
             trigger.focus();
         }
         trigger = null;
+        // After focus is back, so a listener that moves focus itself (the
+        // tutorial's Resume, for one) has the last word.
+        reportStudyInteraction('ui_action', { name: dialog.id, action: 'close' });
     }
 
     if (dialog) {
@@ -2510,6 +2548,7 @@ function setMonarchHidConnected(connected) {
         syncRadios();
     }
     updateGenericDeviceConnectUI();
+    reportDeviceConnection('monarch', connected);
 }
 
 // Called by the DotPad integration (dotpad-integration.js) on connect/disconnect,
@@ -2521,8 +2560,18 @@ function setDotpadConnected(connected) {
         syncRadios();
     }
     updateGenericDeviceConnectUI();
+    reportDeviceConnection('dotpad', connected);
 }
 window.setDotpadConnected = setDotpadConnected;
+
+/** A device connecting or dropping, as an interaction event: the study log has
+ * always had a place for it, and the tutorial's Connect lesson waits on it. The
+ * cube and the slider report through this too (witmotion-imu.js,
+ * trinkey-slider.js). `device` is "monarch", "dotpad", "cube" or "slider". */
+function reportDeviceConnection(device, connected) {
+    reportStudyInteraction('device', { device: String(device), connected: Boolean(connected) });
+}
+window.reportDeviceConnection = reportDeviceConnection;
 
 // --- Connected tactile displays -------------------------------------------
 //
@@ -2621,6 +2670,7 @@ window.setTactileDisplay = setTactileDisplay;
 window.activeTactileGrid = activeTactileGrid;
 
 function switchOutputDevice(targetDevice) {
+    saveOutputDevice(targetDevice);
     if (viewerState.currentOutputDevice === targetDevice) {
         announce(`already using ${targetDevice}`);
         return;
@@ -2632,6 +2682,47 @@ function switchOutputDevice(targetDevice) {
     sendStateToServer();
     return true;
 }
+
+// The display someone chose, kept for their next visit. The viewer used to
+// start on DotPad every time, and the main Connect button follows this setting,
+// so a Monarch user had to change it on every visit (#245 review).
+const SETTINGS_OUTPUT_DEVICE_KEY = 'settingsOutputDevice';
+const OUTPUT_DEVICES = ['monarch', 'dotpad'];
+
+function saveOutputDevice(device) {
+    if (!OUTPUT_DEVICES.includes(device)) return;
+    try {
+        window.localStorage.setItem(SETTINGS_OUTPUT_DEVICE_KEY, device);
+    } catch (_) {
+        // Ignore localStorage failures (e.g., privacy mode, or /demo's shim).
+    }
+}
+
+function initializeOutputDevice() {
+    let stored = null;
+    try {
+        stored = window.localStorage.getItem(SETTINGS_OUTPUT_DEVICE_KEY);
+    } catch (_) {
+        stored = null;
+    }
+    if (OUTPUT_DEVICES.includes(stored)) viewerState.currentOutputDevice = stored;
+    syncRadios();
+}
+
+/** The tutorial's first question is which display someone uses. The answer is
+ * their setting from then on, saved as a choice made in Settings is, and not
+ * put back when the tutorial ends (#245 review). Quiet: the tutorial says what
+ * it noted. */
+function setOutputDevicePreference(device) {
+    if (!OUTPUT_DEVICES.includes(device)) return false;
+    saveOutputDevice(device);
+    if (viewerState.currentOutputDevice === device) return false;
+    viewerState.currentOutputDevice = device;
+    syncRadios();
+    sendStateToServer();
+    return true;
+}
+window.setOutputDevicePreference = setOutputDevicePreference;
 
 // Helper to update viewerState.composeScrollbar and viewerState.composeSliceGraph based on view mode
 function updateDisplayOptions() {
@@ -2786,9 +2877,24 @@ function _visibleModelEntries(model_list) {
     // the same place, render the same way, and an upload is still the uploader's
     // to see. Anything outside the list is simply not offered.
     const demoSet = demoMode && demoModelStems ? new Set(demoModelStems) : null;
+    // The tutorial's mug stays listed on /demo while the tutorial runs, and
+    // while it is still the model on the display after it: otherwise the next
+    // rebuild would swap the selection to the first listed model behind the
+    // reader's back. The server's demo list itself stays at the study's six.
+    const tutorialMugListed = Boolean(window.cadTutorial && window.cadTutorial.running)
+        || viewerState.currentModel === TUTORIAL_MODEL_STEM;
     return model_list
         .map((stem, i) => ({ stem, i }))
-        .filter(({ stem }) => !demoSet || demoSet.has(stem) || ownedStems.has(stem));
+        .filter(({ stem }) => !demoSet || demoSet.has(stem) || ownedStems.has(stem)
+            || (stem === TUTORIAL_MODEL_STEM && tutorialMugListed));
+}
+
+// The tutorial's practice model (static/js/tutorial.js).
+const TUTORIAL_MODEL_STEM = 'tutorial_mug';
+
+/** Whether the tutorial has the model chooser locked for the current lesson. */
+function tutorialLocksControls() {
+    return Boolean(window.cadTutorial && window.cadTutorial.locked);
 }
 
 function updateModelList(model_list) {
@@ -2836,7 +2942,9 @@ function updateModelList(model_list) {
         return;
     }
 
-    dropdown.disabled = false;
+    // A rebuild used to re-enable the chooser unconditionally, which undid the
+    // tutorial's lock on every render that carried a model list.
+    dropdown.disabled = tutorialLocksControls();
 
     entries.forEach(({ stem, i }) => {
         const option = document.createElement("option");
@@ -3255,6 +3363,10 @@ function updateZoom(newZoom, shouldAnnounce = true, sendToServer = true) {
 async function fitCurrentViewToDevice() {
     const renderPipelineParams = getRenderPipelineParams(viewerState.currentRenderMode);
     const orientationPayload = getOrientationPayload();
+    // Fit to the grid the render is drawn at. Without it the server fitted to
+    // its 96x40 default whatever was attached, so on a DotPad (60x40) or with
+    // nothing connected (78x40) the fitted slice did not fill the display.
+    const grid = activeTactileGrid();
 
     const payload = {
         view: viewerState.currentView,
@@ -3270,6 +3382,8 @@ async function fitCurrentViewToDevice() {
         compose_scrollbar: viewerState.composeScrollbar,
         compose_slicegraph: viewerState.composeSliceGraph,
         show_view_info_box: viewerState.showViewInfoBox,
+        target_pixel_width: grid.pixelWidth,
+        target_pixel_height: grid.pixelHeight,
     };
 
     const response = await fetch(`${SERVER_URL}/render/fit-view`, {
@@ -3293,8 +3407,13 @@ async function fitCurrentViewToDevice() {
 
     updateZoom(data.zoom, false, false);
     sendStateToServer();
-    // Only reachable via the 'f' keyboard shortcut — no on-screen button.
-    announceAlert(`View fitted to ${payload.output_device}`);
+    // Only reachable via the 'f' keyboard shortcut; there is no on-screen
+    // button. This used to read out the internal device key ("monarch_hid").
+    // A display is named only when it is actually connected: a Monarch's grid
+    // stays registered after it is unplugged, so the grid alone cannot say.
+    const connectedDisplay = (grid.type === 'Monarch' && monarchHidConnected)
+        || (grid.type === 'DotPad' && dotpadConnected) ? grid.type : null;
+    announceAlert(connectedDisplay ? `View fitted to the ${connectedDisplay}` : 'View fitted to the display');
 
 }
 
@@ -3582,6 +3701,8 @@ function applyStudyDefaults(defaults) {
         viewerState.composeScrollbar = wanted.compose_scrollbar;
     }
 
+    if (wanted.restore) restoreViewState(wanted.restore);
+
     refreshDepthControls();
     if (zoomInput) zoomInput.value = viewerState.currentZoom;
     if (zoomLevelValue) zoomLevelValue.textContent = Number(viewerState.currentZoom).toFixed(1);
@@ -3593,13 +3714,59 @@ function applyStudyDefaults(defaults) {
     refreshStatusBar();
 }
 
+/** What a model's defaults do not hold: the orientation, the cut on every axis
+ * and where each view is panned to. The tutorial takes this when a lesson is
+ * opened from the menu and gives it back on exit, so the person returns to the
+ * view they left and not just the same model and side (#245 review). A plain
+ * copy, so nothing the caller does to it reaches the viewer. */
+function captureViewState() {
+    return JSON.parse(JSON.stringify({
+        orientation: currentBasis(),
+        slice_planes: viewerState.slicePlanes,
+        camera_centers: [...viewerState.cameraCenterByViewOrientation.entries()],
+        world_camera_center: viewerState.currentWorldCameraCenter || null,
+    }));
+}
+
+/** Put back what captureViewState took. Each part is checked and skipped if
+ * it is not what was taken, so a stored record from an older page cannot
+ * leave the viewer half turned. */
+function restoreViewState(saved) {
+    const isAxis = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite)
+        && v.reduce((sum, c) => sum + Math.abs(c), 0) === 1;
+    const o = saved && saved.orientation;
+    if (o && isAxis(o.right) && isAxis(o.up) && isAxis(o.depth)) {
+        viewerState.orientationRight = [...o.right];
+        viewerState.orientationUp = [...o.up];
+        viewerState.orientationDepth = [...o.depth];
+        viewerState.currentView = orientationViewFromDepth(viewerState.orientationDepth);
+    }
+    const planes = saved && saved.slice_planes;
+    if (planes && ['x', 'y', 'z'].every(a => Number.isFinite(planes[a]) && planes[a] >= 0 && planes[a] <= 1)) {
+        viewerState.slicePlanes = { x: planes.x, y: planes.y, z: planes.z };
+        syncSliceDepthFromPlanes();
+    }
+    if (saved && Array.isArray(saved.camera_centers)) {
+        viewerState.cameraCenterByViewOrientation = new Map(
+            saved.camera_centers.filter(entry => Array.isArray(entry) && entry.length === 2),
+        );
+    }
+    if (saved && Array.isArray(saved.world_camera_center)) {
+        viewerState.currentWorldCameraCenter = [...saved.world_camera_center];
+    }
+}
+
 /** Load the model for the current protocol step.
  *
  * `stem` is the model's real name, which is how a model has to be addressed --
  * a position in the server's list means a different file after anyone uploads
  * one (#123). It is never displayed: `label` is the neutral name the participant
- * hears, and updateModelList keeps the stem out of the status bar. */
-function loadStudyModel(stem, label, defaults) {
+ * hears, and updateModelList keeps the stem out of the status bar.
+ *
+ * `source` is what the render is logged as, "study" unless a caller says
+ * otherwise; the tutorial passes "tutorial". It changes nothing else: the load
+ * is silent either way, and a caller that wants it said says it itself. */
+function loadStudyModel(stem, label, defaults, source) {
     if (!stem) return false;
 
     studyModelLabel = label || 'Model';
@@ -3611,9 +3778,23 @@ function loadStudyModel(stem, label, defaults) {
     beginModelLoadAnnouncement(studyModelLabel, 'study');
     // "reset" centres the object, the last of the study defaults. It is a render
     // parameter rather than viewer state, so it is set for this one request and
-    // reset inside sendStateToServer itself once actually consumed 
-    pendingInputSource = 'study';
-    viewerState.currentMoveCamera = 'reset';
+    // reset inside sendStateToServer itself once actually consumed. A view being
+    // put back keeps the pan it had.
+    pendingInputSource = source ? String(source) : 'study';
+    viewerState.currentMoveCamera = defaults && defaults.restore ? 'none' : 'reset';
+    sendStateToServer();
+    return true;
+}
+
+/** Move the object one step, as W, A, S or D does, without saying anything: the
+ * tutorial moves the mug out of place before it asks for Reset, and says so
+ * itself. `direction` is where the object goes: up, down, left or right. */
+function moveObjectQuietly(direction) {
+    // The same pairing as the W/A/S/D cases: moving the object up moves the
+    // viewport down.
+    const camera = { up: 'down', down: 'up', left: 'right', right: 'left' }[direction];
+    if (!camera) return false;
+    viewerState.currentMoveCamera = camera;
     sendStateToServer();
     return true;
 }
@@ -3649,6 +3830,35 @@ function viewerStateSnapshot() {
     };
 }
 
+/** The snapshot plus what the tutorial's step checks read (static/js/
+ * tutorial.js): the model by name, the cursor, the overlays, which displays are
+ * connected, whether single-key shortcuts are on, and the last render that
+ * reached the display. A fresh object each call, so a check cannot change the
+ * viewer by writing to it. */
+function tutorialStateSnapshot() {
+    const { axis, sign } = activeSliceAxis();
+    return {
+        ...viewerStateSnapshot(),
+        // How far the cut is from the surface nearest the reader, 0 to 100, in
+        // either axis mode. cut_percent runs along the axis instead, and from
+        // the right, the back or above going deeper lowers it, so a lesson
+        // that asks for "the far side" cannot tell from cut_percent alone.
+        reader_depth: Math.round(depthFromPlanePosition(viewerState.slicePlanes[axis], sign) * 100) / 100,
+        model: viewerState.currentModel,
+        cursor_col: viewerState.currentCursorCol,
+        cursor_row: viewerState.currentCursorRow,
+        compose_scrollbar: viewerState.composeScrollbar,
+        compose_slicegraph: viewerState.composeSliceGraph,
+        slicegraph_locked: viewerState.sliceGraphLocked,
+        camera_center: getCurrentCameraCenter(viewerState.currentView, getOrientationPayload()),
+        display_connected: monarchHidConnected || dotpadConnected,
+        monarch_connected: monarchHidConnected,
+        dotpad_connected: dotpadConnected,
+        single_key_shortcuts: viewerState.singleKeyShortcuts,
+        last_render_state: lastRenderedState ? JSON.parse(JSON.stringify(lastRenderedState)) : null,
+    };
+}
+
 window.cadStudy = {
     isStudyMode: () => studyMode,
     // Where this study's participant API lives: /studies/<slug>.
@@ -3658,6 +3868,8 @@ window.cadStudy = {
     applyDefaults: applyStudyDefaults,
     loadModel: loadStudyModel,
     snapshot: viewerStateSnapshot,
+    getState: tutorialStateSnapshot,
+    moveObject: moveObjectQuietly,
     // study.js subscribes; kept as a list so nothing here needs to know about it.
     onInteraction: [],
     // The real polite-announcement pipeline (status bar refresh, tactile/
@@ -3670,14 +3882,22 @@ window.cadStudy = {
     // by either, and both must reach the same function.
     announce: announce,
     announcePolite: announce,
+    // The tutorial writes through the same window as the viewer's answers to
+    // keys, so the next key's answer replaces what it was reading (#245 review).
+    announceAlert: announceAlert,
+    captureView: captureViewState,
 };
 
-/** Report an interaction to study.js, if study mode is running. Deliberately
- * tolerant: a listener that throws must not stop the key from doing its job.
+/** Report an interaction to every listener on window.cadStudy.onInteraction, on
+ * every page: study.js subscribes on a study's pages and tutorial.js everywhere
+ * else, and each is inert where it does not belong, so there is nothing to gate
+ * here. It used to return early off the study page, which left the tutorial
+ * deaf. Deliberately tolerant: a listener that throws must not stop the key from
+ * doing its job.
  * Callable from anything hoisted above the assignment above, so it must also
  * tolerate being reached before that has run. */
 function reportStudyInteraction(eventType, eventData) {
-    if (!studyMode || !window.cadStudy) return;
+    if (!window.cadStudy) return;
     for (const listener of window.cadStudy.onInteraction) {
         try {
             listener(eventType, eventData, viewerStateSnapshot());
@@ -3936,6 +4156,7 @@ function initializeAxisSettings() {
 }
 
 exportSliceSvgBtn.addEventListener('click', function() {
+    reportStudyInteraction('ui_action', { name: 'export', action: 'click' });
     exportCurrentSliceAsPng();
 });
 
@@ -3980,6 +4201,17 @@ document.addEventListener('keydown', function(e) {
         return;
     }
 
+    // A list keeps its letters and digits too: typing jumps to the option that
+    // starts with them, which is how screen reader users get through a long
+    // model list, and the tutorial's last lesson asks for exactly that (#245
+    // review).
+    const ownsTypeAhead = Boolean(
+        target && typeof target.closest === 'function' && target.closest('select, [role="listbox"]')
+    );
+    if (ownsTypeAhead && String(e.key || '').length === 1) {
+        return;
+    }
+
     // A modal dialog (shortcuts help, session consent) makes the rest of the page
     // inert — Escape and Tab must stay scoped to it, not also fire a background
     // shortcut underneath.
@@ -4010,10 +4242,26 @@ document.addEventListener('keydown', function(e) {
         'x', 'y', 'z', ',',
         '4', '5', '0',
         'r', 't', 'g', 'v',
-        'w', 'a', 's', 'd', '[', ']', 'h', '?', 'p', '.', 'escape', 'f'
+        'w', 'a', 's', 'd', '[', ']', 'h', '?', '.', 'escape', 'f'
     ]);
 
     if (!supportedShortcuts.has(normalizedKey)) {
+        return;
+    }
+
+    // The tutorial's Key help mode, like VoiceOver's VO-K or NVDA's input help:
+    // the key is described and does nothing else, so it is not reported as
+    // having acted either. Before the guards below (#245 review): a letter is
+    // described even with single-key shortcuts off, saying it does nothing now,
+    // and a held key is described once rather than on every repeat.
+    if (window.cadTutorial && window.cadTutorial.keyHelpActive) {
+        e.preventDefault();
+        if (e.repeat) return;
+        if (typeof window.cadTutorial.describeKey === 'function') {
+            window.cadTutorial.describeKey(normalizedKey, {
+                inactive: !viewerState.singleKeyShortcuts && normalizedKey.length === 1,
+            });
+        }
         return;
     }
 
@@ -4288,11 +4536,6 @@ document.addEventListener('keydown', function(e) {
             openShortcutsDialog();
             break;
 
-        case 'p':
-            announceAlert('Printing current render');
-            print_view();
-            break;
-
         case '0':
             // Reset, for everyone, in both modes. It was Z, which cannot mean
             // "reset" in one mode and "slice along Z" in the other; 0 is what
@@ -4419,12 +4662,17 @@ async function refreshDemoIndicator({ spoken }) {
 }
 
 function focusTopOfPage() {
-    const pageTitle = document.getElementById('page-title');
-    if (!pageTitle) {
-        return;
-    }
     // Delay one frame so layout is ready before moving focus.
     requestAnimationFrame(() => {
+        // While the tutorial is showing, the top of the page for this person is
+        // its current lesson, not the page title above the menu. Looked up in the
+        // frame rather than before it, so a tutorial that opened in between keeps
+        // the focus it gave its own heading.
+        const tutorialHeading = document.querySelector('#tutorial-region:not([hidden]) h2');
+        const pageTitle = tutorialHeading || document.getElementById('page-title');
+        if (!pageTitle) {
+            return;
+        }
         pageTitle.focus({ preventScroll: true });
         // Scrolling the title to the top pushed the demo indicator off screen,
         // which defeats the point of an indicator you are supposed to be able to
@@ -4492,6 +4740,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     initializeOptionalSectionVisibility();
     initializeSliceGraphMode();
     initializeAxisSettings();
+    initializeOutputDevice();
     updateGenericDeviceConnectUI();
 
     // Pre-select a model when opened via /workshop?model=<stem> or ?model=<stem>.
@@ -4512,14 +4761,24 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (studyMode) return;
 
     // Send initial state to server
+    // The page is set up. The tutorial waits for this before it applies a
+    // lesson's view, since everything above would otherwise overwrite it.
+    document.dispatchEvent(new CustomEvent('cad:viewer-ready'));
+    // When the tutorial is about to start, its practice mug is the first render,
+    // so the default model never reaches the display first. The tutorial always
+    // hands this back, rendering itself if it decides not to start.
+    if (window.cadTutorial && window.cadTutorial.ownsFirstRender) return;
     pendingInputSource = 'init';
     sendStateToServer();
 
 });
 
-// Ensure top focus is restored when returning via browser history cache.
-window.addEventListener('pageshow', function() {
-    focusTopOfPage();
+// Ensure top focus is restored when returning via browser history cache. Only
+// then: pageshow also fires on an ordinary load, after DOMContentLoaded, and
+// moving focus again there took it off whatever the page had since focused,
+// such as the tutorial's first lesson.
+window.addEventListener('pageshow', function(event) {
+    if (event.persisted) focusTopOfPage();
 });
 
 // Tell the server to delete this tab's uploads when the tab goes away.

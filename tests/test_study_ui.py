@@ -184,10 +184,13 @@ class TestStudyRegionMarkup:
 class TestStudyModeBehaviour:
     def test_consent_dialog_is_skipped_on_study(self):
         """Study participants consent before the session. A modal in front of a
-        participant mid-onboarding would be both redundant and disruptive."""
+        participant mid-onboarding would be both redundant and disruptive. The
+        dialog still reports that it settled, so nothing waiting on it (the
+        tutorial, which is inert here) waits for ever."""
         html = VIEWER_HTML.read_text(encoding="utf-8")
         assert (
-            "if (/^\\/studies\\/[a-z0-9]+(?:-[a-z0-9]+)*\\/?$/.test(location.pathname)) return;"
+            "if (/^\\/studies\\/[a-z0-9]+(?:-[a-z0-9]+)*\\/?$/.test(location.pathname)) "
+            "return settleConsent('study', null);"
             in html
         )
 
