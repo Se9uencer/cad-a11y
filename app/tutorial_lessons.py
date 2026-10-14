@@ -121,15 +121,20 @@ def _k(keyboard: str | None, code: str | None, does: str, *, monarch: str | None
 
 KEYS: dict[str, dict[str, Any]] = {
     # Depth. Dots 1 and 4 step 10% on both displays, through the same function
-    # as Page Up and Page Down, so deeper means the same whatever is pressed.
+    # as Page Up and Page Down, so deeper means the same whatever is pressed. On
+    # the DotPad, dots 1 2 and 4 5 step 1%, and dots 1 2 3 and 4 5 6 are Home
+    # and End (#280).
     "depth_deeper_10": _k("Page Up", "pageup", "moves the slice plane 10% deeper, away from you",
                           monarch="dot 4", dotpad="dot 4"),
     "depth_shallower_10": _k("Page Down", "pagedown", "moves the slice plane 10% shallower, toward you",
                              monarch="dot 1", dotpad="dot 1"),
-    "depth_deeper_1": _k("Arrow Up", "arrowup", "moves the slice plane 1% deeper, away from you"),
-    "depth_shallower_1": _k("Arrow Down", "arrowdown", "moves the slice plane 1% shallower, toward you"),
-    "depth_near": _k("Home", "home", "moves the slice plane to the surface nearest you"),
-    "depth_far": _k("End", "end", "moves the slice plane to the far side"),
+    "depth_deeper_1": _k("Arrow Up", "arrowup", "moves the slice plane 1% deeper, away from you",
+                         dotpad="dots 4 5"),
+    "depth_shallower_1": _k("Arrow Down", "arrowdown", "moves the slice plane 1% shallower, toward you",
+                            dotpad="dots 1 2"),
+    "depth_near": _k("Home", "home", "moves the slice plane to the surface nearest you",
+                     dotpad="dots 1 2 3"),
+    "depth_far": _k("End", "end", "moves the slice plane to the far side", dotpad="dots 4 5 6"),
     # XYZ mode's axes. On the DotPad they are the braille letters x, y and z.
     "axis_x": _k("X", "x", "slices along X from plus, and pressed again from minus. XYZ mode only",
                  monarch="braille x", dotpad="braille x"),
@@ -152,7 +157,7 @@ KEYS: dict[str, dict[str, Any]] = {
                       "switches to Outline"),
     "reset": _k("0", "0", "resets the view to square, the slice plane to 50%, the zoom to 0 and "
                 "the model to the centre"),
-    "fit": _k("F", "f", "fits the current slice to the display"),
+    "fit": _k("F", "f", "fits the current slice to the display", dotpad="braille f"),
     # How the slice is drawn and laid out.
     "render_mode": _k("R", "r", "changes the render mode: Cut, X-Ray, Filled, Outline"),
     "layout": _k("T", "t", "changes the layout: Single, Side-by-Side, Slice Graph"),
@@ -189,6 +194,12 @@ KEYS: dict[str, dict[str, Any]] = {
     "cursor_up": _k(None, None, "moves the cursor up", monarch="D-pad up", dotpad="function key 1"),
     "cursor_down": _k(None, None, "moves the cursor down", monarch="D-pad down",
                       dotpad="function key 4"),
+    # With the cursor off, the DotPad's panning keys page through an announcement
+    # too long for its text line (#154).
+    "text_back": _k(None, None, "shows the previous part of a message too long for the text line, "
+                    "while the cursor is off", dotpad="the left panning key"),
+    "text_forward": _k(None, None, "shows the next part of a message too long for the text line, "
+                       "while the cursor is off", dotpad="the right panning key"),
     # The display test pattern reads dots 1 and 4 as left and right instead of
     # moving the slice plane; the runner captures them while the pattern is up.
     "pattern_left": _k(None, None, "answers left in the display test", monarch="dot 1", dotpad="dot 1"),
@@ -218,6 +229,13 @@ DEVICE_COMMANDS: dict[str, str | None] = {
     "move-right": "cursor_right",
     "move-up": "cursor_up",
     "move-down": "cursor_down",
+    "depth-shallower-1": "depth_shallower_1",
+    "depth-deeper-1": "depth_deeper_1",
+    "depth-near": "depth_near",
+    "depth-far": "depth_far",
+    "fit": "fit",
+    "text-back": "text_back",
+    "text-forward": "text_forward",
     "other": None,
 }
 
@@ -1610,13 +1628,25 @@ def _key_help() -> dict[str, str]:
     return help_text
 
 
+def _device_keys() -> dict[str, str]:
+    """The keyboard key each display button does the work of, so a step waiting for
+    Home also takes dots 1 2 3 on the DotPad: {"dotpad:depth-near": "home"}."""
+    keys: dict[str, str] = {}
+    for device in ("monarch", "dotpad"):
+        for command, name in DEVICE_COMMANDS.items():
+            if name and KEYS[name][device] and KEYS[name]["code"]:
+                keys[f"{device}:{command}"] = KEYS[name]["code"]
+    return keys
+
+
 def lessons_payload(display: str = "none") -> dict[str, Any]:
     """The lessons for one display, with every {key:NAME} resolved.
 
     display is "monarch", "dotpad" or "none"; anything else is treated as "none",
     so a mistyped query string still gets a tutorial that names keyboard keys.
     Runtime tokens ({handle_side} and the rest) are left for the runner. Returns
-    {"version", "lessons", "keys", "key_help"}; the server adds the landmarks."""
+    {"version", "lessons", "keys", "key_help", "device_keys"}; the server adds the
+    landmarks."""
     display = str(display or "none").strip().lower()
     if display not in DISPLAYS:
         display = "none"
@@ -1625,4 +1655,5 @@ def lessons_payload(display: str = "none") -> dict[str, Any]:
         "lessons": _resolve(copy.deepcopy(LESSONS), display),
         "keys": copy.deepcopy(KEYS),
         "key_help": _key_help(),
+        "device_keys": _device_keys(),
     }

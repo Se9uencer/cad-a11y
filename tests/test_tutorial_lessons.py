@@ -112,8 +112,13 @@ REQUIRED_KEY_NAMES = {
 # The command names the runner's captureDeviceKey hook reports (contract section 5).
 CAPTURE_NAMES = {
     "dot1", "dot4", "cursor", "axis-x", "axis-y", "axis-z", "move-left", "move-right", "move-up",
-    "move-down", "other",
+    "move-down", "depth-shallower-1", "depth-deeper-1", "depth-near", "depth-far", "fit",
+    "text-back", "text-forward", "other",
 }
+
+# The DotPad's text line is paged by its panning keys (#154). The Monarch shows
+# announcements its own way, so these exist on the DotPad only.
+DOTPAD_ONLY_KEYS = {"text_back", "text_forward"}
 
 # Handled by tutorial.js rather than the viewer.
 TUTORIAL_KEY_NAMES = {"tutorial_continue", "tutorial_back", "tutorial_repeat", "tutorial_show_me"}
@@ -1089,7 +1094,7 @@ def test_every_placeholder_resolves(display):
             for name in KEY_PLACEHOLDER.findall(text):
                 assert name in tl.KEYS, f"{lesson['id']}.{where} names unknown key {name!r}"
     payload = tl.lessons_payload(display)
-    assert set(payload) == {"version", "lessons", "keys", "key_help"}
+    assert set(payload) == {"version", "lessons", "keys", "key_help", "device_keys"}
     assert payload["version"] == tl.TUTORIAL_VERSION
     assert "{key:" not in json.dumps(payload)
 
@@ -1098,7 +1103,10 @@ def test_display_buttons_are_named_only_for_that_display():
     assert tl.key_name("depth_deeper_10", "none") == "Page Up"
     assert tl.key_name("depth_deeper_10", "monarch") == "dot 4 or Page Up"
     assert tl.key_name("depth_deeper_10", "dotpad") == "dot 4 or Page Up"
-    assert tl.key_name("depth_deeper_1", "dotpad") == "Arrow Up"
+    assert tl.key_name("depth_deeper_1", "dotpad") == "dots 4 5 or Arrow Up"
+    assert tl.key_name("depth_near", "dotpad") == "dots 1 2 3 or Home"
+    assert tl.key_name("depth_near", "monarch") == "Home"
+    assert tl.key_name("zoom_in_10", "dotpad") == "3"
     assert tl.key_name("cursor_mode", "monarch") == "Space"
     assert tl.key_name("cursor_mode", "dotpad") == "dots 1 2 3 6"
     assert tl.key_name("cursor_mode", "none") == "Space on the Monarch, dots 1 2 3 6 on the DotPad"
@@ -1179,6 +1187,9 @@ def test_key_table_fields_and_required_names():
         if entry["keyboard"] is None:
             # A display-only control has to exist on both displays, or someone
             # is taught a control their display does not have.
+            if name in DOTPAD_ONLY_KEYS:
+                assert entry["dotpad"] and not entry["monarch"], name
+                continue
             assert entry["monarch"] and entry["dotpad"], name
     codes = [entry["code"] for entry in tl.KEYS.values() if entry["code"]]
     assert len(codes) == len(set(codes)), "two keys share a code"
@@ -1371,6 +1382,81 @@ def test_dotpad_names_are_what_dotpad_integration_maps():
     assert set(actions) == set(DOTPAD_KEY_NAMES.values())
 
 
+def test_dotpad_depth_chords_fit_and_paging_are_what_dotpad_integration_maps():
+    """Dots 1 2 and 4 5 step 1%, dots 1 2 3 and 4 5 6 are Home and End (#280) and
+    braille f fits, each through the function its keyboard key uses; the panning
+    keys page the text line while the cursor is off (#154)."""
+    source = _dotpad_js()
+    on_key = _compact(_strip_comments(_dotpad_on_key()))
+    for name, call in (
+        ("depth_shallower_1", "window.stepSliceDepth(-1)"),
+        ("depth_deeper_1", "window.stepSliceDepth(1)"),
+        ("depth_near", "if(typeofwindow.goToSliceEnd==='function')window.goToSliceEnd(false)"),
+        ("depth_far", "if(typeofwindow.goToSliceEnd==='function')window.goToSliceEnd(true)"),
+    ):
+        dots = re.fullmatch(r"dots ([1-6](?: [1-6])*)", tl.KEYS[name]["dotpad"])
+        assert dots, name
+        byte = _dot_bits(dots.group(1))
+        branch = on_key.split(f"if(byte6===0x{byte:02x})", 1)
+        assert len(branch) == 2, f"{name}: no branch for byte 0x{byte:02x}"
+        assert branch[1].startswith("{" + call), f"{name}: byte 0x{byte:02x} does not {call}"
+    assert tl.KEYS["fit"]["dotpad"] == "braille f"
+    fit_branch = on_key.split("if(letter==='f'){", 1)
+    assert len(fit_branch) == 2, "no branch for the letter f"
+    assert fit_branch[1].startswith(
+        "if(typeofwindow.fitCurrentViewToDevice==='function'){window.fitCurrentViewToDevice()"
+    ), "the f chord does not fit"
+    scroll = re.search(r"const DOTPAD_TEXT_SCROLL = \{(.*?)\};", source, re.DOTALL)
+    assert scroll, "DOTPAD_TEXT_SCROLL not found"
+    steps = {key: int(step) for key, step in re.findall(r"(\w+):\s*(-?\d+)", scroll.group(1))}
+    for name, key, step in (("text_back", "PanningLeft", -1), ("text_forward", "PanningRight", 1)):
+        assert DOTPAD_KEY_NAMES[tl.KEYS[name]["dotpad"]] == key, name
+        assert steps[key] == step, f"{key} pages {steps[key]}, not {step}"
+
+
+def test_the_dotpad_reports_each_button_by_the_command_it_is():
+    """The names onKey gives the tutorial are the ones key help and the device
+    keys are built from, chord by chord."""
+    source = _dotpad_js()
+    dots = re.search(r"const DOTPAD_TUTORIAL_DOTS = \{(.*?)\};", source, re.DOTALL)
+    assert dots, "DOTPAD_TUTORIAL_DOTS not found"
+    by_byte = {int(byte, 16): name for byte, name in re.findall(r"0x([0-9A-Fa-f]{2}):\s*'([\w-]+)'", dots.group(1))}
+    for name, command in (
+        ("depth_shallower_10", "dot1"),
+        ("depth_deeper_10", "dot4"),
+        ("depth_shallower_1", "depth-shallower-1"),
+        ("depth_deeper_1", "depth-deeper-1"),
+        ("depth_near", "depth-near"),
+        ("depth_far", "depth-far"),
+    ):
+        pressed = re.fullmatch(r"dots? ([1-6](?: [1-6])*)", tl.KEYS[name]["dotpad"])
+        assert pressed, name
+        assert by_byte[_dot_bits(pressed.group(1))] == command, name
+        assert tl.DEVICE_COMMANDS[command] == name, command
+    assert "f: 'fit'" in source and tl.DEVICE_COMMANDS["fit"] == "fit"
+    for command, key in (("text-back", "PanningLeft"), ("text-forward", "PanningRight")):
+        assert f"{key}: '{command}'" in source, command
+        assert DOTPAD_KEY_NAMES[tl.KEYS[tl.DEVICE_COMMANDS[command]]["dotpad"]] == key, command
+
+
+def test_device_keys_name_the_key_each_button_does_the_work_of():
+    device_keys = tl.lessons_payload("dotpad")["device_keys"]
+    assert device_keys["dotpad:depth-near"] == "home"
+    assert device_keys["dotpad:depth-far"] == "end"
+    assert device_keys["dotpad:depth-shallower-1"] == "arrowdown"
+    assert device_keys["dotpad:depth-deeper-1"] == "arrowup"
+    assert device_keys["dotpad:dot1"] == "pagedown"
+    assert device_keys["dotpad:fit"] == "f"
+    assert device_keys["monarch:dot4"] == "pageup"
+    # No keyboard key behind the cursor or the text line, and nothing the
+    # Monarch does not have.
+    assert "dotpad:text-back" not in device_keys
+    assert "dotpad:cursor" not in device_keys
+    assert "monarch:depth-near" not in device_keys
+    codes = {entry["code"] for entry in tl.KEYS.values() if entry["code"]}
+    assert set(device_keys.values()) <= codes
+
+
 # ---------------------------------------------------------------------------
 # Coverage: everything the viewer offers is taught somewhere
 # ---------------------------------------------------------------------------
@@ -1479,13 +1565,21 @@ TUTORIAL_BUTTON = ("your_own_model", "choose the Tutorial button in the main men
 DEVICE_COVERAGE = {
     "dot1": ("depth", "depth_shallower_10"),
     "dot4": ("depth", "depth_deeper_10"),
+    "depth-shallower-1": ("depth", "depth_shallower_1"),
+    "depth-deeper-1": ("depth", "depth_deeper_1"),
+    "depth-near": ("depth", "depth_near"),
+    "depth-far": ("depth", "depth_far"),
+    "fit": ("reset_and_fit", "fit"),
     "axis-x": ("axes", "axis_x"),
     "axis-y": ("axes", "axis_y"),
     "axis-z": ("axes", "axis_z"),
 }
 # Display buttons no lesson teaches. The cursor has nothing to do yet, so its
-# lesson came out (#245 review); key help still names these buttons.
-DEVICE_BUTTONS_NOT_TAUGHT = {"cursor", "move-left", "move-right", "move-up", "move-down"}
+# lesson came out (#245 review); key help still names these buttons. Paging the
+# text line is new with #166 and no lesson teaches it yet.
+DEVICE_BUTTONS_NOT_TAUGHT = {
+    "cursor", "move-left", "move-right", "move-up", "move-down", "text-back", "text-forward",
+}
 
 
 def test_every_viewer_shortcut_is_taught():

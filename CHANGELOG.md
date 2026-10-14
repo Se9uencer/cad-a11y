@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-10-13
+
+#### Added
+*   The DotPad's braille text line scrolls (#154). A message longer than its 20 cells is shown a page at a time, broken at spaces, and with the cursor off the panning keys, LP and RP, move back and forward through it. Each new message starts on its first page. Where the viewer has a short braille form of a message, such as "Z 31%", that is what the line shows.
+*   More DotPad buttons: dots 1 2 and 4 5 move the slice plane 1% shallower or deeper, dots 1 2 3 and 4 5 6 move it to the surface nearest you or the far side, as Home and End do (#280), and braille f fits the slice to the display.
+*   In the tutorial, a display button counts as the key it does the work of, so a step that asks for Home also takes dots 1 2 3 on the DotPad, and key help names the new buttons.
+
 ## [v1.0.0-alpha] - 2026-10-12
 
 ### 2026-10-05
