@@ -248,8 +248,9 @@ async function connectDotpad() {
         setStatus('Scanning for BLE DotPad...');
         const device = await scanner.startBleScan();
         if (!device) {
-            setStatus('No BLE device selected.');
-            if (typeof window.announceAlert === 'function') window.announceAlert('No DotPad was selected. Check that it is on and in range, then choose Connect again.');
+            const msg = 'No DotPad was selected. Check that it is on and in range, then choose Connect again.';
+            setStatus(msg);
+            if (typeof window.announceAlert === 'function') window.announceAlert(msg);
             return;
         }
         rawTarget = device;
